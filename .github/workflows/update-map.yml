@@ -1,0 +1,51 @@
+name: Update Bishkek map
+
+on:
+  schedule:
+    - cron: '0 21 * * *'   # every day at 03:00 Bishkek time (UTC+6)
+  workflow_dispatch: {}    # also allows a manual run from the Actions tab
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-map
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download Bishkek from OpenStreetMap (Overpass API)
+        run: |
+          set -e
+          for url in https://overpass-api.de/api/interpreter https://overpass.kumi.systems/api/interpreter https://maps.mail.ru/osm/tools/overpass/api/interpreter; do
+            echo "Trying $url"
+            if curl -sSf --retry 2 --retry-delay 30 --max-time 1500 \
+                 -A "ten-route-builder (github.com/${{ github.repository }})" \
+                 --data-urlencode "data@scripts/bishkek.overpassql" -o bishkek.osm "$url"; then
+              if [ "$(stat -c%s bishkek.osm)" -gt 1000000 ]; then echo "OK from $url"; break; fi
+            fi
+            echo "Failed from $url"; rm -f bishkek.osm
+          done
+          test -f bishkek.osm
+          ls -lh bishkek.osm
+
+      - name: Build compact map
+        run: node scripts/build-map.mjs bishkek.osm data/bishkek.json
+
+      - name: Commit if changed
+        run: |
+          git config user.name "map-bot"
+          git config user.email "map-bot@users.noreply.github.com"
+          git add data/bishkek.json
+          if git diff --cached --quiet; then echo "No changes"; exit 0; fi
+          git commit -m "Update Bishkek map $(date -u +%F)"
+          git push
